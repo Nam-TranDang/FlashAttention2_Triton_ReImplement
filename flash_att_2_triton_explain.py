@@ -47,6 +47,20 @@ HIỂU ĐƠN GIẢN CODE:
         2 (lần tách head của Q) * 4 (mỗi lần tile Q của từng head) = 8 programs 
 
     * out_ptrs 
+
+FlashAttention-2 in Triton with 32x32 tiles (Tensor Cores & Shared Memory enabled).
+File: flash_att_2_tile32x32.py
+
+Highlights:
+1. BLOCK_M = 32, BLOCK_N = 32, HEAD_DIM = 32 -> activates NVIDIA Tensor Cores (tl.dot).
+2. Shared Memory (SRAM) is actually allocated on-chip (ld.shared, st.shared).
+3. Precision: fp16 for inputs/MMA math, fp32 for online-softmax tracking stats.
+4. Tiny VRAM usage (< 1 MB) while testing real GPU hardware mechanisms.
+5. Auto-inspects PTX to verify:
+   - Shared memory (SRAM) byte count (> 0)
+   - ld.shared / st.shared instructions
+   - Tensor Core matrix multiplication (mma/wgmma)
+   - Zero st.global writes in the inner loop
 '''
 
 
