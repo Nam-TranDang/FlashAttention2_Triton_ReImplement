@@ -243,11 +243,11 @@ def flash_attn_2_fwd_kernel(
         5. Write the normalized output tile into HBM at the end.
 
         Q block (loaded ONCE, stays on-chip)
-    │
-    ├── iter 0: load K0,V0 → S=QK0ᵀ → softmax update → acc += P·V0
-    ├── iter 1: load K1,V1 → ...
-    ├── iter 2: load K2,V2 → ...
-    └── iter 3: load K3,V3 → ...
+        │
+        ├── iter 0: load K0,V0 → S=QK0ᵀ → softmax update → acc += P·V0
+        ├── iter 1: load K1,V1 → ...
+        ├── iter 2: load K2,V2 → ...
+        └── iter 3: load K3,V3 → ...
             Normalize once → store O to HBM
     '''
 
@@ -454,6 +454,9 @@ def main():
     # Shape mỗi tensor = [BATCH, HEADS, N_CTX, HEAD_DIM] = [1, 2, 128, 32] => 8192 phần tử fp16 (16 KB) mỗi tensor.
     # Cùng 1 shape cho Q, K, V (self-attention). Dữ liệu sinh ngẫu nhiên,
     # Ở HBM của GPU.
+    q = torch.randn(BATCH, HEADS, N_CTX, HEAD_DIM, dtype=torch.float16, device=DEVICE)
+    k = torch.randn(BATCH, HEADS, N_CTX, HEAD_DIM, dtype=torch.float16, device=DEVICE)
+    v = torch.randn(BATCH, HEADS, N_CTX, HEAD_DIM, dtype=torch.float16, device=DEVICE)
 
  
     # ---------------- B. Run Triton FlashAttention-2 ----------------
