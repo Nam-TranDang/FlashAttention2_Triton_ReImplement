@@ -64,7 +64,7 @@ Highlights:
 
 *** STANDARD SOFTMAX (full load KV - no Fused Kernel)
 torch.nn.Softmax 
-softmax(x)ᵢ = exp(xᵢ - max) / Σ exp(xⱼ - max)
+softmax(x)ᵢ = exp(xᵢ - max) / Σ exp(xⱼ - max) --> Need accumulate denominator 
 
 *** ONLINE SOFTMAX (Fused kernel - Custome Softmax Flash Attention)
 1. max of the row	
@@ -72,11 +72,34 @@ softmax(x)ᵢ = exp(xᵢ - max) / Σ exp(xⱼ - max)
 2. numerator exp(x - max)	
     p = tl.math.exp(qk - m_next[:, None])
 3. denominator Σ exp(...)	
-    l_i = l_i * alpha + tl.sum(p, axis=1)
+    l_i = l_i * alpha + tl.sum(p, axis=1) --> Need accumulate denominator Σeᶻʲ piece by piece
 4. the division	
-    acc = acc / l_i[:, None] (once, after the loop)
+    acc = acc / l_i[:, None] (once, after the loop) --> softmax(QK)·V is computed as acc / l_i,
 5. fix-up when max changes	
     alpha = tl.math.exp(m_i - m_next)
+
+
+*** SOFTMAX 
+
+Why Flash Attention use the e^(zⱼ − c) with C = Max value 
+--> It solve the "overflow in e^(...)" --> let the e^(...) getting small 
+==> Basically, below the result is identical (shift invariance) for Softmax && apply for both numerator and the denominator
+
+        e^zᵢ                e^zᵢ · e^(−c)             e^(zᵢ − c)
+P_i = ────────── = ─────────────────────────── = ───────────────
+       Σ e^zⱼ        (Σ e^zⱼ) · e^(−c)            Σ e^(zⱼ − c)
+                      └── multiply top and bottom by e^(−c) ──┘
+
+E.G: S = [1, 3, 2, 5] 
+- No Max (origin Softmax)
+    e¹ + e³ + e² + e⁵ = 2.718 + 20.086 + 7.389 + 148.413 = 178.606
+        P₀ = 2.718 / 178.606 = 0.0152     ← ( e^zᵢ / Σ e^zⱼ  - with j = 0)
+
+- With Max (for Flash Attention) - S max = 5
+     e⁻⁴ + e⁻² + e⁻³ + e⁰= 0.0183 + 0.1353 + 0.0498 + 1.0000 = 1.2034
+       P₀ = 0.0183 / 1.2034 = 0.0152     ← e^(zᵢ − max) / Σ e^(zⱼ − max), with i = 0
+
+    ==> Sum total P = 1
 
 The max and the sum are built up tile by tile, and alpha rescales the old values whenever a new tile has 
 a larger max. The result is mathematically the same as torch.softmax.
@@ -84,6 +107,26 @@ a larger max. The result is mathematically the same as torch.softmax.
 One detail: the division happens on acc (which is already P @ V), not on P. 
 This is allowed because dividing by a per-row constant commutes with the matrix multiply. 
 It saves work, since acc is 32×32 and normalizing once at the end is cheaper than normalizing every tile.
+
+
+Flow (Flash Attention 2):
+Before the loop:
+  Load Q tile from HBM → registers (once)
+  Init m_i = -inf, l_i = 0, acc = 0
+
+Loop iteration 0 (tile 0): - ONLY in SRAM - Register calculation
+  a. Load K tile 0 and V tile 0 from HBM
+  b. S tile 0 = Q · K_tile0ᵀ                          [Tensor Core]
+  c. Online softmax update with S tile 0:
+       m_next, alpha, p = exp(S − m_next)             [CUDA Core]
+  d. acc = acc·alpha + p · V_tile0                    [Tensor Core]
+  e. l_i = l_i·alpha + sum(p),  m_i = m_next
+
+Loop iteration 1, 2, 3: same steps a to e with tile 1, 2, 3
+
+After the loop:
+  O = acc / l_i                                       ← normalization
+  Store O tile → HBM (once)
 
 '''
 
