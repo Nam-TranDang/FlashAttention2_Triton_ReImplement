@@ -61,6 +61,30 @@ Highlights:
    - ld.shared / st.shared instructions
    - Tensor Core matrix multiplication (mma/wgmma)
    - Zero st.global writes in the inner loop
+
+*** STANDARD SOFTMAX (full load KV - no Fused Kernel)
+torch.nn.Softmax 
+softmax(x)ᵢ = exp(xᵢ - max) / Σ exp(xⱼ - max)
+
+*** ONLINE SOFTMAX (Fused kernel - Custome Softmax Flash Attention)
+1. max of the row	
+    m_ij = tl.max(qk, axis=1) and m_next = tl.maximum(m_i, m_ij)
+2. numerator exp(x - max)	
+    p = tl.math.exp(qk - m_next[:, None])
+3. denominator Σ exp(...)	
+    l_i = l_i * alpha + tl.sum(p, axis=1)
+4. the division	
+    acc = acc / l_i[:, None] (once, after the loop)
+5. fix-up when max changes	
+    alpha = tl.math.exp(m_i - m_next)
+
+The max and the sum are built up tile by tile, and alpha rescales the old values whenever a new tile has 
+a larger max. The result is mathematically the same as torch.softmax.
+
+One detail: the division happens on acc (which is already P @ V), not on P. 
+This is allowed because dividing by a per-row constant commutes with the matrix multiply. 
+It saves work, since acc is 32×32 and normalizing once at the end is cheaper than normalizing every tile.
+
 '''
 
 
